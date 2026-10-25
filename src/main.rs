@@ -16,6 +16,7 @@ enum FrameError {
     InvalidSync,
     LengthMismatch,
     InvalidCrc,
+    PayloadTooLarge,
 }
 
 fn crc16_ccitt_false(data: &[u8]) -> u16 {
@@ -36,15 +37,17 @@ fn crc16_ccitt_false(data: &[u8]) -> u16 {
     crc
 }
 
-fn encode_frame(message_type: u8, payload: &[u8]) -> Vec<u8> {
+fn encode_frame(message_type: u8, payload: &[u8]) -> Result<Vec<u8>, FrameError> {
+    let payload_len = u16::try_from(payload.len()).map_err(|_| FrameError::PayloadTooLarge)?;
+
     let mut frame = vec![SYNC[0], SYNC[1], message_type];
-    frame.extend_from_slice(&(payload.len() as u16).to_le_bytes());
+    frame.extend_from_slice(&payload_len.to_le_bytes());
     frame.extend_from_slice(payload);
 
     let crc = crc16_ccitt_false(&frame[2..]);
     frame.extend_from_slice(&crc.to_le_bytes());
 
-    frame
+    Ok(frame)
 }
 
 fn parse_frame(data: &[u8]) -> Result<Frame, FrameError> {
@@ -92,7 +95,8 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     if args.len() == 1 && args[0] == "--example" {
-        let bytes = encode_frame(0x10, &[0xDE, 0xAD]);
+        let bytes = encode_frame(0x10, &[0xDE, 0xAD]).expect("example payload length fits in u16");
+
         println!("Generated frame:");
         print_hex(&bytes);
         return;
@@ -143,7 +147,7 @@ mod tests {
 
     #[test]
     fn parses_valid_frame() {
-        let bytes = encode_frame(0x10, &[0xDE, 0xAD]);
+        let bytes = encode_frame(0x10, &[0xDE, 0xAD]).expect("test payload length fits in u16");
 
         assert_eq!(
             parse_frame(&bytes),
@@ -156,7 +160,7 @@ mod tests {
 
     #[test]
     fn rejects_invalid_sync() {
-        let mut bytes = encode_frame(0x10, &[0x01]);
+        let mut bytes = encode_frame(0x10, &[0x01]).expect("test payload length fits in u16");
         bytes[0] = 0x00;
 
         assert_eq!(parse_frame(&bytes), Err(FrameError::InvalidSync));
@@ -164,7 +168,7 @@ mod tests {
 
     #[test]
     fn rejects_corrupted_crc() {
-        let mut bytes = encode_frame(0x10, &[0x01, 0x02]);
+        let mut bytes = encode_frame(0x10, &[0x01, 0x02]).expect("test payload length fits in u16");
         let last = bytes.len() - 1;
         bytes[last] ^= 0xFF;
 
@@ -173,7 +177,7 @@ mod tests {
 
     #[test]
     fn rejects_truncated_frame() {
-        let mut bytes = encode_frame(0x10, &[0x01, 0x02]);
+        let mut bytes = encode_frame(0x10, &[0x01, 0x02]).expect("test payload length fits in u16");
         bytes.pop();
 
         assert_eq!(parse_frame(&bytes), Err(FrameError::LengthMismatch));
@@ -186,7 +190,7 @@ mod tests {
 
     #[test]
     fn rejects_extra_bytes() {
-        let mut bytes = encode_frame(0x10, &[0x01]);
+        let mut bytes = encode_frame(0x10, &[0x01]).expect("test payload length fits in u16");
         bytes.push(0x00);
 
         assert_eq!(parse_frame(&bytes), Err(FrameError::LengthMismatch));
@@ -194,8 +198,19 @@ mod tests {
 
     #[test]
     fn encoded_frame_has_valid_crc() {
-        let bytes = encode_frame(0x42, &[0x01, 0x02, 0x03]);
+        let bytes =
+            encode_frame(0x42, &[0x01, 0x02, 0x03]).expect("test payload length fits in u16");
 
         assert!(parse_frame(&bytes).is_ok());
+    }
+
+    #[test]
+    fn rejects_payload_larger_than_u16_length() {
+        let payload = vec![0; usize::from(u16::MAX) + 1];
+
+        assert_eq!(
+            encode_frame(0x10, &payload),
+            Err(FrameError::PayloadTooLarge)
+        );
     }
 }
