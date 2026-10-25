@@ -213,4 +213,9 @@ mod tests {
             Err(FrameError::PayloadTooLarge)
         );
     }
+
+    #[test]
+    fn crc16_ccitt_false_matches_reference_vector() {
+        assert_eq!(crc16_ccitt_false(b"123456789"), 0x29B1);
+    }
 }
